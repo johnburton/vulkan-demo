@@ -3,10 +3,13 @@
 #include <cstdint>
 #include <stdio.h>
 #include <stdlib.h>
+#include <sys/types.h>
 #include <vulkan/vulkan_core.h>
 
 #define GLFW_INCLUDE_VULKAN
 #include <GLFW/glfw3.h>
+
+// NOTE: We use dynamic rendering everywhere possible, so no render passes or framebuffers are created.
 
 static constexpr int MAX_FRAMES_IN_FLIGHT = 2;
 
@@ -26,6 +29,10 @@ static VkFence image_available_fences[MAX_FRAMES_IN_FLIGHT];
 
 static VkSemaphore image_available_semaphores[MAX_FRAMES_IN_FLIGHT];
 static VkSemaphore render_finished_semaphores[MAX_FRAMES_IN_FLIGHT];
+
+static uint32_t swapchain_image_count = 0;
+static VkImage* swapchain_images;;
+static VkImageView* swapchain_image_views;
 
 static uint32_t current_frame = 0;
 static uint32_t current_image_index = 0;
@@ -115,7 +122,8 @@ static void init_vulkan_surface() {
 static void init_vulkan_device() {
 
     const char* device_extensions[] = {
-        VK_KHR_SWAPCHAIN_EXTENSION_NAME
+        VK_KHR_SWAPCHAIN_EXTENSION_NAME,
+        VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME
     };
 
     // Find a suitable queue family
@@ -138,12 +146,18 @@ static void init_vulkan_device() {
     queueCreateInfo.queueCount = 1;
     queueCreateInfo.pQueuePriorities = &queuePriority;
 
+    // Enable dynamic rendering feature (required for vkCmdBeginRendering/vkCmdEndRendering)
+    VkPhysicalDeviceDynamicRenderingFeatures dynamic_rendering_feats{};
+    dynamic_rendering_feats.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES;
+    dynamic_rendering_feats.dynamicRendering = VK_TRUE;
+
     VkDeviceCreateInfo createInfo{};
     createInfo.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
     createInfo.queueCreateInfoCount = 1;
     createInfo.pQueueCreateInfos = &queueCreateInfo;
     createInfo.enabledExtensionCount = 1;
     createInfo.ppEnabledExtensionNames = device_extensions;
+    createInfo.pNext = &dynamic_rendering_feats;
 
     vkCreateDevice(physical_device, &createInfo, nullptr, &device);
 
@@ -174,12 +188,38 @@ void init_vulkan_swapchain() {
 
     vkCreateSwapchainKHR(device, &create_info, nullptr, &swapchain);
 
+    vkGetSwapchainImagesKHR(device, swapchain, &swapchain_image_count, nullptr);
+    swapchain_images = (VkImage*)malloc(sizeof(VkImage) * swapchain_image_count);
+    vkGetSwapchainImagesKHR(device, swapchain, &swapchain_image_count, swapchain_images);
+
+    swapchain_image_views = (VkImageView*)malloc(sizeof(VkImageView) * swapchain_image_count);
+    for (uint32_t i = 0; i < swapchain_image_count; ++i) {
+        VkImageViewCreateInfo view_info{};
+        view_info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+        view_info.image = swapchain_images[i];
+        view_info.viewType = VK_IMAGE_VIEW_TYPE_2D;
+        view_info.format = VK_FORMAT_B8G8R8A8_SRGB;
+        view_info.components.r = VK_COMPONENT_SWIZZLE_IDENTITY;
+        view_info.components.g = VK_COMPONENT_SWIZZLE_IDENTITY;
+        view_info.components.b = VK_COMPONENT_SWIZZLE_IDENTITY;
+        view_info.components.a = VK_COMPONENT_SWIZZLE_IDENTITY;
+        view_info.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        view_info.subresourceRange.baseMipLevel = 0;
+        view_info.subresourceRange.levelCount = 1;
+        view_info.subresourceRange.baseArrayLayer = 0;
+        view_info.subresourceRange.layerCount = 1;
+
+        vkCreateImageView(device, &view_info, nullptr, &swapchain_image_views[i]);
+    }
+
+
     printf("• Swapchain created.\n");
 }
 
 static void init_vulkan_command_buffers() {
     VkCommandPoolCreateInfo pool_info{};
     pool_info.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+    pool_info.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
     pool_info.queueFamilyIndex = graphics_queue_family_index;
 
     vkCreateCommandPool(device, &pool_info, nullptr, &command_pool);
@@ -218,6 +258,137 @@ void render_init() {
     init_vulkan_swapchain();
     init_vulkan_command_buffers();
     init_vulkan_sync_objects();
+}
+
+void render_begin_frame() {
+    vkWaitForFences(device, 1, &image_available_fences[current_frame], VK_TRUE, UINT64_MAX);
+    vkResetFences(device, 1, &image_available_fences[current_frame]);
+
+    vkAcquireNextImageKHR(device, swapchain, UINT64_MAX, image_available_semaphores[current_frame], VK_NULL_HANDLE, &current_image_index);
+
+    VkCommandBuffer command_buffer = command_buffers[current_frame];
+
+    vkResetCommandBuffer(command_buffer, 0);
+
+    VkCommandBufferBeginInfo begin_info{};
+    begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+
+    vkBeginCommandBuffer(command_buffer, &begin_info);
+  // Transition swapchain image from UNDEFINED -> COLOR_ATTACHMENT_OPTIMAL before rendering.
+    VkImageMemoryBarrier barrier{};
+    barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    barrier.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.image = swapchain_images[current_image_index];
+    barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    barrier.subresourceRange.baseMipLevel = 0;
+    barrier.subresourceRange.levelCount = 1;
+    barrier.subresourceRange.baseArrayLayer = 0;
+    barrier.subresourceRange.layerCount = 1;
+    barrier.srcAccessMask = 0;
+    barrier.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+
+    vkCmdPipelineBarrier(
+        command_buffer,
+        VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+        VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+        0,
+        0, nullptr,
+        0, nullptr,
+        1, &barrier
+    );
+
+    // Begin dynamic rendering and clear the color attachment.
+    VkRenderingAttachmentInfo color_attachment{};
+    color_attachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+    color_attachment.imageView = swapchain_image_views[current_image_index];
+    color_attachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    color_attachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    color_attachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    color_attachment.clearValue.color = { {0.1f, 0.0f, 0.0f, 1.0f} }; // clear to black (RGBA)
+
+    VkRenderingInfo rendering_info{};
+    rendering_info.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+    rendering_info.renderArea.offset = {0, 0};
+    rendering_info.renderArea.extent = {800, 600};
+    rendering_info.layerCount = 1;
+    rendering_info.colorAttachmentCount = 1;
+    rendering_info.pColorAttachments = &color_attachment;
+
+    vkCmdBeginRendering(command_buffer, &rendering_info);
+
+    printf("• Frame %d image index %d: Command buffer recording started.\n", current_frame, current_image_index);
+}
+
+void render_end_frame() {
+    VkCommandBuffer command_buffer = command_buffers[current_frame];
+
+    vkCmdEndRendering(command_buffer);
+
+      // Transition the swapchain image to VK_IMAGE_LAYOUT_PRESENT_SRC_KHR before presenting.
+    // Record an image memory barrier into the current command buffer.
+    VkImageMemoryBarrier barrier{};
+    barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    barrier.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL; // assumed previous layout
+    barrier.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.image = swapchain_images[current_image_index];
+    barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    barrier.subresourceRange.baseMipLevel = 0;
+    barrier.subresourceRange.levelCount = 1;
+    barrier.subresourceRange.baseArrayLayer = 0;
+    barrier.subresourceRange.layerCount = 1;
+    barrier.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    barrier.dstAccessMask = 0;
+
+    vkCmdPipelineBarrier(
+        command_buffer,
+        VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+        VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+        0,
+        0, nullptr,
+        0, nullptr,
+        1, &barrier
+    );
+    vkEndCommandBuffer(command_buffer);
+
+    VkSubmitInfo submit_info{};
+    submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+
+    VkSemaphore wait_semaphores[] = { image_available_semaphores[current_frame] };
+    VkPipelineStageFlags wait_stages[] = { VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT };
+    submit_info.waitSemaphoreCount = 1;
+    submit_info.pWaitSemaphores = wait_semaphores;
+    submit_info.pWaitDstStageMask = wait_stages;
+
+    submit_info.commandBufferCount = 1;
+    submit_info.pCommandBuffers = &command_buffer;
+
+    VkSemaphore signal_semaphores[] = { render_finished_semaphores[current_frame] };
+    submit_info.signalSemaphoreCount = 1;
+    submit_info.pSignalSemaphores = signal_semaphores;
+
+    vkQueueSubmit(graphics_queue, 1, &submit_info, image_available_fences[current_frame]);
+
+    VkPresentInfoKHR present_info{};
+    present_info.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
+
+    present_info.waitSemaphoreCount = 1;
+    present_info.pWaitSemaphores = signal_semaphores;
+
+    VkSwapchainKHR swapchains[] = { swapchain };
+    present_info.swapchainCount = 1;
+    present_info.pSwapchains = swapchains;
+    present_info.pImageIndices = &current_image_index;
+
+    vkQueuePresentKHR(graphics_queue, &present_info);
+
+    printf("• Frame %d presented.\n", current_frame);
+
+    current_frame = (current_frame + 1) % MAX_FRAMES_IN_FLIGHT;
 }
 
 bool render_should_close() {
