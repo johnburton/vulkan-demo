@@ -1,5 +1,9 @@
-#include <stdio.h>
+#include "render.h"
 
 int main() {
-    printf("Hello from prototype vulkan renderer\n");
+    render_init();
+
+    while (!render_should_close()) {
+
+    }
 }

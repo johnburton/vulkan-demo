@@ -3,4 +3,7 @@ project(game VERSION 1.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 23)
 
-add_executable(main main.cpp)
+add_subdirectory(libs/glfw)
+
+add_executable(main main.cpp render.cpp)
+target_link_libraries(main PRIVATE glfw)
