@@ -8,6 +8,11 @@
 #define GLFW_INCLUDE_VULKAN
 #include <GLFW/glfw3.h>
 
+struct Shader {
+    VkShaderModule frag_module;
+    VkShaderModule vert_module;
+};
+
 // NOTE: We use dynamic rendering everywhere possible, so no render passes or framebuffers are created.
 
 static constexpr int MAX_FRAMES_IN_FLIGHT = 2;
@@ -393,4 +398,27 @@ void render_end_frame() {
 bool render_should_close() {
     glfwPollEvents();
     return glfwWindowShouldClose(window);
+}
+
+void render_create_shader(Shader **shader, Shader_Data *shader_data) {
+    *shader = new Shader();
+
+    VkShaderModuleCreateInfo vert_create_info{};
+    vert_create_info.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+    vert_create_info.codeSize = shader_data->vert_size;
+    vert_create_info.pCode = (const uint32_t*)shader_data->vert_source;
+
+    vkCreateShaderModule(device, &vert_create_info, nullptr, &(*shader)->vert_module);
+    VkShaderModuleCreateInfo frag_create_info{};
+    frag_create_info.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+    frag_create_info.codeSize = shader_data->frag_size;
+    frag_create_info.pCode = (const uint32_t*)shader_data->frag_source;
+
+    vkCreateShaderModule(device, &frag_create_info, nullptr, &(*shader)->frag_module);
+}
+
+void render_destroy_shader(Shader *shader) {
+    vkDestroyShaderModule(device, shader->vert_module, nullptr);
+    vkDestroyShaderModule(device, shader->frag_module, nullptr);
+    delete shader;
 }
