@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <sys/types.h>
+#include <vulkan/vulkan_core.h>
 
 #define GLFW_INCLUDE_VULKAN
 #include <GLFW/glfw3.h>
@@ -11,6 +12,11 @@
 struct Shader {
     VkShaderModule frag_module;
     VkShaderModule vert_module;
+};
+
+struct Material {
+    VkPipeline pipeline;
+    VkPipelineLayout pipeline_layout;
 };
 
 // NOTE: We use dynamic rendering everywhere possible, so no render passes or framebuffers are created.
@@ -421,4 +427,137 @@ void render_destroy_shader(Shader *shader) {
     vkDestroyShaderModule(device, shader->vert_module, nullptr);
     vkDestroyShaderModule(device, shader->frag_module, nullptr);
     delete shader;
+}
+
+void render_create_material(Material **material, Shader *shader) {
+    *material = new Material();
+
+    // Create empty pipeline layout (no descriptor sets or push constants for now)
+    VkPipelineLayoutCreateInfo layout_info{};
+    layout_info.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    layout_info.setLayoutCount = 0;
+    layout_info.pSetLayouts = nullptr;
+    layout_info.pushConstantRangeCount = 0;
+    layout_info.pPushConstantRanges = nullptr;
+
+    vkCreatePipelineLayout(device, &layout_info, nullptr, &(*material)->pipeline_layout);
+
+    // Shader stages
+    VkPipelineShaderStageCreateInfo vert_stage{};
+    vert_stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    vert_stage.stage = VK_SHADER_STAGE_VERTEX_BIT;
+    vert_stage.module = shader->vert_module;
+    vert_stage.pName = "main";
+
+    VkPipelineShaderStageCreateInfo frag_stage{};
+    frag_stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    frag_stage.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+    frag_stage.module = shader->frag_module;
+    frag_stage.pName = "main";
+
+    VkPipelineShaderStageCreateInfo shader_stages[2] = { vert_stage, frag_stage };
+
+    // No vertex input (we'll use vertex id in shader)
+    VkPipelineVertexInputStateCreateInfo vertex_input{};
+    vertex_input.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+    vertex_input.vertexBindingDescriptionCount = 0;
+    vertex_input.vertexAttributeDescriptionCount = 0;
+
+    VkPipelineInputAssemblyStateCreateInfo input_assembly{};
+    input_assembly.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+    input_assembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+    input_assembly.primitiveRestartEnable = VK_FALSE;
+
+    VkPipelineViewportStateCreateInfo viewport_state{};
+    viewport_state.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+    viewport_state.viewportCount = 1;
+    viewport_state.scissorCount = 1;
+
+    VkPipelineRasterizationStateCreateInfo raster{};
+    raster.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+    raster.depthClampEnable = VK_FALSE;
+    raster.rasterizerDiscardEnable = VK_FALSE;
+    raster.polygonMode = VK_POLYGON_MODE_FILL;
+    raster.cullMode = VK_CULL_MODE_BACK_BIT;
+    raster.frontFace = VK_FRONT_FACE_CLOCKWISE;
+    raster.depthBiasEnable = VK_FALSE;
+    raster.lineWidth = 1.0f;
+
+    VkPipelineMultisampleStateCreateInfo ms{};
+    ms.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+    ms.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+
+    VkPipelineColorBlendAttachmentState color_attachment{};
+    color_attachment.blendEnable = VK_FALSE;
+    color_attachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+
+    VkPipelineColorBlendStateCreateInfo color_blend{};
+    color_blend.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+    color_blend.attachmentCount = 1;
+    color_blend.pAttachments = &color_attachment;
+
+    VkDynamicState dynamic_states[] = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
+    VkPipelineDynamicStateCreateInfo dynamic{};
+    dynamic.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+    dynamic.dynamicStateCount = 2;
+    dynamic.pDynamicStates = dynamic_states;
+
+    // Inform pipeline about dynamic rendering and the color format we will render into.
+    VkFormat color_format = VK_FORMAT_B8G8R8A8_SRGB;
+    VkPipelineRenderingCreateInfo pipeline_rendering{};
+    pipeline_rendering.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
+    pipeline_rendering.viewMask = 0;
+    pipeline_rendering.colorAttachmentCount = 1;
+    pipeline_rendering.pColorAttachmentFormats = &color_format;
+
+    VkGraphicsPipelineCreateInfo pipeline_info{};
+    pipeline_info.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+    pipeline_info.pNext = &pipeline_rendering;
+    pipeline_info.stageCount = 2;
+    pipeline_info.pStages = shader_stages;
+    pipeline_info.pVertexInputState = &vertex_input;
+    pipeline_info.pInputAssemblyState = &input_assembly;
+    pipeline_info.pViewportState = &viewport_state;
+    pipeline_info.pRasterizationState = &raster;
+    pipeline_info.pMultisampleState = &ms;
+    pipeline_info.pColorBlendState = &color_blend;
+    pipeline_info.pDynamicState = &dynamic;
+    pipeline_info.layout = (*material)->pipeline_layout;
+
+    vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &pipeline_info, nullptr, &(*material)->pipeline);
+}
+
+void render_destroy_material(Material *material) {
+    vkDestroyPipeline(device, material->pipeline, nullptr);
+    vkDestroyPipelineLayout(device, material->pipeline_layout, nullptr);
+    delete material;
+}
+
+void render_draw(Material* material) {
+    VkCommandBuffer command_buffer = command_buffers[current_frame];
+
+    // Bind the graphics pipeline
+    vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, material->pipeline);
+
+    // Set dynamic viewport and scissor to match the rendering area (800x600)
+    VkViewport viewport{};
+    viewport.x = 0.0f;
+    viewport.y = 600.0f;
+    viewport.width = 800.0f;
+    viewport.height = -600.0f;
+    viewport.minDepth = 0.0f;
+    viewport.maxDepth = 1.0f;
+    vkCmdSetViewport(command_buffer, 0, 1, &viewport);
+
+    VkRect2D scissor{};
+    scissor.offset = {0, 0};
+    scissor.extent = {800, 600};
+    vkCmdSetScissor(command_buffer, 0, 1, &scissor);
+
+    // Issue a simple draw call (3 vertices -> triangle)
+    vkCmdDraw(command_buffer, 3, 1, 0, 0);
+}
+
+void render_wait_idle() {
+    vkDeviceWaitIdle(device);
 }

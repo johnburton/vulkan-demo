@@ -12,12 +12,18 @@ int main() {
 
     Shader* shader;
     render_create_shader(&shader, &shader_data);
+    Material* material = nullptr;
+    render_create_material(&material, shader);
 
     while (!render_should_close()) {
         render_begin_frame();
+        render_draw(material);
         render_end_frame();
     }
 
+    render_wait_idle();
+
     render_destroy_shader(shader);
+    render_destroy_material(material);
     assets_free_shaders(&shader_data);
 }
