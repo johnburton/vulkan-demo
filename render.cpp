@@ -4,7 +4,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <sys/types.h>
-#include <vulkan/vulkan_core.h>
 
 #define GLFW_INCLUDE_VULKAN
 #include <GLFW/glfw3.h>
@@ -31,7 +30,7 @@ static VkSemaphore image_available_semaphores[MAX_FRAMES_IN_FLIGHT];
 static VkSemaphore render_finished_semaphores[MAX_FRAMES_IN_FLIGHT];
 
 static uint32_t swapchain_image_count = 0;
-static VkImage* swapchain_images;;
+static VkImage* swapchain_images;
 static VkImageView* swapchain_image_views;
 
 static uint32_t current_frame = 0;
@@ -104,8 +103,8 @@ static void init_vulkan_surface() {
 
     VkSurfaceCapabilitiesKHR surfaceCapabilities;
     vkGetPhysicalDeviceSurfaceCapabilitiesKHR(physical_device, surface, &surfaceCapabilities);
-    printf("  - Min image count: %d\n", surfaceCapabilities.minImageCount);
-    printf("  - Max image count: %d\n", surfaceCapabilities.maxImageCount);
+    printf("  - Min image count: %u\n", surfaceCapabilities.minImageCount);
+    printf("  - Max image count: %u\n", surfaceCapabilities.maxImageCount);
     printf("  - Current extent: %d x %d\n", surfaceCapabilities.currentExtent.width, surfaceCapabilities.currentExtent.height);
 
     uint32_t formatCount;
@@ -155,13 +154,13 @@ static void init_vulkan_device() {
     createInfo.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
     createInfo.queueCreateInfoCount = 1;
     createInfo.pQueueCreateInfos = &queueCreateInfo;
-    createInfo.enabledExtensionCount = 1;
+    createInfo.enabledExtensionCount = 2;
     createInfo.ppEnabledExtensionNames = device_extensions;
     createInfo.pNext = &dynamic_rendering_feats;
 
     vkCreateDevice(physical_device, &createInfo, nullptr, &device);
 
-    vkGetDeviceQueue(device, 0, 0, &graphics_queue);
+    vkGetDeviceQueue(device, graphics_queue_family_index, 0, &graphics_queue);
 
     printf("• Logical device created.\n");
 }
